@@ -2,12 +2,15 @@
 compile_error!("One of the features `pio` or `native` must be selected.");
 use std::iter::once;
 
+use crate::native::cargo_driver::chip::Chip;
 use anyhow::*;
 use bindgen::callbacks::{IntKind, ParseCallbacks};
 use common::*;
 use embuild::bindgen::BindgenExt;
 use embuild::utils::OsStrExt;
 use embuild::{bindgen as bindgen_utils, build, cargo, kconfig, path_buf};
+use std::io::Write;
+use std::str::FromStr;
 
 mod common;
 mod config;
@@ -46,6 +49,99 @@ impl ParseCallbacks for BindgenCallbacks {
             None
         }
     }
+}
+
+const STATIC_INLINE: &str = "static_inlines";
+
+fn static_inlines_c() -> String {
+    format!("{}.c", STATIC_INLINE)
+}
+
+fn static_inlines_o() -> String {
+    format!("{}.o", STATIC_INLINE)
+}
+
+fn static_inlines_a() -> String {
+    format!("lib{}.a", STATIC_INLINE)
+}
+
+fn strip_quotes(args: &str) -> Vec<String> {
+    let mut out = vec![];
+    for arg in args.split_whitespace() {
+        let mut chars = arg.chars();
+        let first = chars.next();
+        chars.next_back();
+        let trim = if first == Some('\"') {
+            chars.as_str()
+        } else {
+            arg
+        };
+        out.push(trim.to_string());
+    }
+    out
+}
+
+fn process_static_inlines(
+    build_output_args: &str,
+    clang_args: Vec<String>,
+    mcu: &str,
+    headers: Vec<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    let chip = Chip::from_str(mcu)?;
+    let gcc = format!("{}-gcc", chip.gcc_compiler());
+    let ar = format!("{}-gcc-ar", chip.gcc_compiler());
+
+    let out_dir_path = cargo::out_dir();
+
+    let mut gcc_cmd = std::process::Command::new(gcc);
+    let mut gcc_args = gcc_cmd
+        .arg("-mlongcalls")
+        .arg("-O")
+        .arg("-c")
+        .arg("-o")
+        .arg(out_dir_path.join(&static_inlines_o()))
+        .arg(out_dir_path.join(&static_inlines_c()));
+    for hdr in headers.iter() {
+        gcc_args = gcc_args.arg("-include").arg(hdr);
+    }
+    gcc_args = gcc_args.args(strip_quotes(build_output_args));
+    gcc_args = gcc_args.args(clang_args);
+
+    let gcc_output = gcc_args.output().unwrap();
+    if !gcc_output.status.success() {
+        panic!(
+            "Could not compile object file:\n{}",
+            String::from_utf8_lossy(&gcc_output.stderr)
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let lib_output = std::process::Command::new(ar)
+        .arg("rcs")
+        .arg(out_dir_path.join(static_inlines_a()))
+        .arg(out_dir_path.join(static_inlines_o()))
+        .output()
+        .unwrap();
+    #[cfg(target_os = "windows")]
+    let lib_output = std::process::Command::new("lib")
+        .arg(&out_dir_path.join(static_inlines_o()))
+        .output()
+        .unwrap();
+
+    if !lib_output.status.success() {
+        panic!(
+            "Could not emit library file:\n{}",
+            String::from_utf8_lossy(&lib_output.stderr)
+        );
+    }
+
+    println!(
+        "cargo:rustc-link-search=native={}",
+        out_dir_path.to_string_lossy()
+    );
+    println!("cargo:rustc-link-lib=static={}", STATIC_INLINE);
+
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -100,9 +196,13 @@ fn main() -> anyhow::Result<()> {
     // Because we have multiple bindgen invocations and we can't clone a bindgen::Builder,
     // we have to set the options every time.
     let configure_bindgen = |bindgen: bindgen::Builder| {
+        let mut outdir = cargo::out_dir();
+        outdir.push(STATIC_INLINE);
         Ok(bindgen
             .parse_callbacks(Box::new(BindgenCallbacks))
             .use_core()
+            .wrap_static_fns(true)
+            .wrap_static_fns_path(outdir)
             .enable_function_attribute_detection()
             .clang_arg("-DESP_PLATFORM")
             .blocklist_function("strtold")
@@ -149,7 +249,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     configure_bindgen(build_output.bindgen.clone().builder()?)?
-        .headers(headers)?
+        .headers(headers.clone())?
         .generate()
         .with_context(bindgen_err)?
         .write_to_file(&bindings_file)
@@ -159,7 +259,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "native", not(feature = "pio")))]
     (|| {
         use std::fs;
-        use std::io::{BufWriter, Write};
+        use std::io::BufWriter;
 
         let mut output_file =
             BufWriter::new(fs::File::options().append(true).open(&bindings_file)?);
@@ -189,7 +289,7 @@ fn main() -> anyhow::Result<()> {
             .into_iter()
             .chain(EspIdfVersion::parse(bindings_file)?.cfg_args())
             .chain(build_output.components.cfg_args())
-            .chain(once(mcu))
+            .chain(once(mcu.clone()))
             .collect(),
     };
     cfg_args.propagate();
@@ -212,6 +312,14 @@ fn main() -> anyhow::Result<()> {
     if let Some(link_args) = build_output.link_args {
         link_args.propagate();
     }
+
+    let clang_args: Vec<String> = build_output.components.clang_args().collect();
+    process_static_inlines(
+        &build_output.cincl_args.args,
+        clang_args.clone(),
+        &mcu,
+        headers.clone(),
+    )?;
 
     Ok(())
 }

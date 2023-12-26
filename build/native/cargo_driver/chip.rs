@@ -120,4 +120,19 @@ impl Chip {
     pub fn cmake_toolchain_file(self) -> String {
         format!("toolchain-{self}.cmake")
     }
+
+    /// The name of the exact gcc compiler that cmake uses to build esp-idf.
+    pub fn gcc_compiler(&self) -> &'static str {
+        match self {
+            Self::ESP32 => "xtensa-esp32-elf",
+            Self::ESP32S2 => "xtensa-esp32s2-elf",
+            Self::ESP32S3 => "xtensa-esp32s3-elf",
+            Self::ESP32C2
+            | Self::ESP32C3
+            | Self::ESP32H2
+            | Self::ESP32C5
+            | Self::ESP32C6
+            | Self::ESP32P4 => "riscv32-esp-elf",
+        }
+    }
 }
