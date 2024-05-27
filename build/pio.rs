@@ -1,6 +1,5 @@
 //! Install tools and build the `esp-idf` using `platformio`.
 
-use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::{env, fs};
 
@@ -19,6 +18,10 @@ pub const TOOLS_DIR: &str = "platformio";
 const ESP_IDF_PIO_CONF_VAR_PREFIX: &str = "ESP_IDF_PIO_CONF";
 
 pub fn build() -> Result<EspIdfBuildOutput> {
+    sanitize_project_path()?;
+    sanitize_c_env_vars()?;
+    setup_clang_env()?;
+
     let (pio_scons_vars, link_args, config) =
         if let Some(pio_scons_vars) = project::SconsVariables::from_piofirst() {
             println!("cargo:info=PIO->Cargo build detected: generating bindings only");
@@ -80,7 +83,7 @@ pub fn build() -> Result<EspIdfBuildOutput> {
                 .params(pio::ResolutionParams {
                     platform: Some("espressif32".into()),
                     frameworks: vec!["espidf".into()],
-                    mcu: config.mcu.clone(),
+                    mcu: config.mcu.clone().map(|mcu| mcu.to_uppercase()), // MCU always uppercase in PlatformIO
                     target: Some(env::var("TARGET")?),
                     ..Default::default()
                 })
@@ -154,7 +157,7 @@ pub fn build() -> Result<EspIdfBuildOutput> {
 
     let build_output = EspIdfBuildOutput {
         cincl_args: build::CInclArgs::try_from(&pio_scons_vars)?,
-        env_path: link_args.as_ref().map(|_| pio_scons_vars.path.clone()),
+        env_path: Some(pio_scons_vars.path.clone()),
         link_args,
         bindgen: bindgen::Factory::from_scons_vars(&pio_scons_vars)?,
         components: EspIdfComponents::from_esp_idf(&esp_idf)?,

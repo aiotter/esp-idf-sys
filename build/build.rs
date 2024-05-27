@@ -1,5 +1,3 @@
-#[cfg(not(any(feature = "pio", feature = "native")))]
-compile_error!("One of the features `pio` or `native` must be selected.");
 use std::iter::once;
 
 use crate::native::cargo_driver::chip::Chip;
@@ -17,21 +15,22 @@ use std::str::FromStr;
 mod common;
 mod config;
 
-#[cfg(feature = "native")]
+// Features `native` and `pio` control whether the build is performed using the "native" ESP IDF CMake-based build,
+// or via the PlatformIO `espressif32` module. They work as follows:
+// - If neither the `native` nor the `pio` feature is specified, native build would be used
+// - If boththe  `native` and `pio` features are specified, native build would be used as well
+// - Otherwise, either native or PlatformIO build would be used, depending on which feature is specified
+//
+// The sole reason why the `native` feature exists in the first place is so that if somebody uses `cargo check --all-features`
+// (might happen due to VSCode Rust Analyzer default settings) native build to still be used in that case.
+#[cfg(any(feature = "native", not(feature = "pio")))]
 mod native;
-#[cfg(feature = "pio")]
+#[cfg(all(not(feature = "native"), feature = "pio"))]
 mod pio;
 
-// Note that the first alias must exclude the `pio` feature, so that in the event both
-// features are specified the `pio` build driver is preferred.
-// The `native` and `pio` features are really mutually exclusive but that would require
-// that all dependencies specify the same feature so instead we prefer the `pio` feature
-// over `native` so that if one package specifies it, this overrides the `native` feature
-// for all other dependencies too.
-// See https://doc.rust-lang.org/cargo/reference/features.html#mutually-exclusive-features.
-#[cfg(all(feature = "native", not(feature = "pio")))]
+#[cfg(any(feature = "native", not(feature = "pio")))]
 use native as build_driver;
-#[cfg(feature = "pio")]
+#[cfg(all(not(feature = "native"), feature = "pio"))]
 use pio as build_driver;
 
 #[derive(Debug)]
@@ -202,12 +201,15 @@ fn main() -> anyhow::Result<()> {
             .collect(),
     };
 
-    let mcu = cfg_args.get("esp_idf_idf_target").ok_or_else(|| {
-        anyhow!(
-            "Failed to get IDF_TARGET from kconfig. cfgs:\n{:?}",
-            cfg_args.args
-        )
-    })?;
+    let mcu = cfg_args
+        .get("esp_idf_idf_target")
+        .ok_or_else(|| {
+            anyhow!(
+                "Failed to get IDF_TARGET from kconfig. cfgs:\n{:?}",
+                cfg_args.args
+            )
+        })?
+        .to_lowercase();
 
     let manifest_dir = manifest_dir()?;
 
@@ -244,6 +246,7 @@ fn main() -> anyhow::Result<()> {
             .blocklist_function("_v.*printf_r")
             .blocklist_function("_v.*scanf_r")
             .blocklist_function("esp_log_writev")
+            .blocklist_type("pcnt_unit_t") // Fix for struct pcnt_unit_t vs enum pcnt_unit_t
             .clang_args(build_output.components.clang_args())
             .clang_args(vec![
                 "-target",
@@ -268,7 +271,7 @@ fn main() -> anyhow::Result<()> {
     #[allow(unused_mut)]
     let mut headers = vec![header_file];
 
-    #[cfg(all(feature = "native", not(feature = "pio")))]
+    #[cfg(any(feature = "native", not(feature = "pio")))]
     // Add additional headers from extra components.
     headers.extend(
         build_output
@@ -287,7 +290,7 @@ fn main() -> anyhow::Result<()> {
         .with_context(bindgen_err)?;
 
     // Generate bindings separately for each unique module name.
-    #[cfg(all(feature = "native", not(feature = "pio")))]
+    #[cfg(any(feature = "native", not(feature = "pio")))]
     (|| {
         use std::fs;
         use std::io::{BufWriter, Write};
@@ -334,16 +337,17 @@ fn main() -> anyhow::Result<()> {
         cargo::set_metadata(embuild::build::ENV_PATH_VAR, env_path);
     }
 
-    // In case other crates need to the ESP-IDF SDK
+    // In case other crates need access to the ESP-IDF SDK
     cargo::set_metadata(
         embuild::build::ESP_IDF_PATH_VAR,
         build_output.esp_idf.try_to_str()?,
     );
 
-    build_output.cincl_args.propagate();
-
     if let Some(link_args) = build_output.link_args {
         link_args.propagate();
+
+        // Only necessary for building the examples
+        link_args.output();
     }
 
     let clang_args: Vec<String> = build_output.components.clang_args().collect();

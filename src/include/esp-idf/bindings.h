@@ -4,7 +4,7 @@
 #error Only ESP-IDF versions >= V4.3.2 are currently supported; if you are using the PIO build (the default one), wipe out your `.embuild` folder and try again with a clean rebuild
 #endif
 
-//#include "esp_crc.h"
+#include "esp_rom_crc.h"
 #include "esp_log.h"
 #include "esp_debug_helpers.h"
 
@@ -14,8 +14,19 @@
 #include "esp_interface.h"
 #include "esp_ipc.h"
 #include "esp_mac.h"
+#include "esp_freertos_hooks.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/atomic.h"
+#include "freertos/event_groups.h"
+#include "freertos/list.h"
+#include "freertos/message_buffer.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/stream_buffer.h"
+#include "freertos/task.h"
 #include "freertos/task_snapshot.h"
+#include "freertos/timers.h"
 
 #if CONFIG_IDF_TARGET_ESP32
 #if ESP_IDF_VERSION_MAJOR == 4
@@ -59,13 +70,27 @@
 #include "esp_timer.h"
 #endif
 
+#if ESP_IDF_VERSION_MAJOR > 4
+#ifdef ESP_IDF_COMP_SPI_FLASH_ENABLED
+#include "esp_flash.h"
+#include "esp_spi_flash.h"
+#endif
+#ifdef ESP_IDF_COMP_ESP_PARTITION
+#include "esp_partition.h"
+#endif
+#else
 #ifdef ESP_IDF_COMP_SPI_FLASH_ENABLED
 #include "esp_spi_flash.h"
 #include "esp_partition.h"
 #endif
+#endif
 
 #if defined(ESP_IDF_COMP_ESP_ADC_CAL_ENABLED) || defined(ESP_IDF_COMP_ESP_ADC_ENABLED)
 #include "esp_adc_cal.h"
+#if ESP_IDF_VERSION_MAJOR > 4
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#endif
 #endif
 
 #ifdef ESP_IDF_COMP_ESP_EVENT_ENABLED
@@ -90,6 +115,20 @@
 #if defined(CONFIG_ESP_WIFI_DPP_SUPPORT) || defined(CONFIG_WPA_DPP_SUPPORT)
 #include "esp_dpp.h"
 #endif
+#if defined(CONFIG_ESP_WIFI_MBO_SUPPORT) || defined(CONFIG_WPA_MBO_SUPPORT)
+#include "esp_mbo.h"
+#endif
+#include "esp_rrm.h"
+#include "esp_wnm.h"
+#include "esp_wpa.h"
+#include "esp_wpa2.h"
+#include "esp_wps.h"
+#if ESP_IDF_VERSION_MAJOR > 5 || ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR >= 1
+#include "esp_supplicant_utils.h"
+#endif
+// #if ESP_IDF_VERSION_MAJOR > 5 || ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR >= 2
+// #include "esp_eap_client.h"
+// #endif
 #endif
 
 #ifdef ESP_IDF_COMP_ESP_ETH_ENABLED
@@ -134,6 +173,11 @@
 #include "lwip/sockets.h"
 #include "esp_sntp.h"
 #include "ping/ping_sock.h"
+#if ESP_IDF_VERSION_MAJOR > 5 || ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR >= 1
+#ifdef ESP_IDF_COMP_ESP_NETIF_ENABLED
+#include "esp_netif_sntp.h"
+#endif
+#endif
 #endif
 
 #ifdef ESP_IDF_COMP_MBEDTLS_ENABLED
@@ -143,11 +187,21 @@
 #endif
 
 #ifdef ESP_IDF_COMP_ESP_TLS_ENABLED
+
+// See https://github.com/espressif/esp-idf/issues/12541
+#ifdef CONFIG_ESP_TLS_USING_MBEDTLS
+#include "mbedtls/ssl.h"
+#elif CONFIG_ESP_TLS_USING_WOLFSSL
+#include "wolfssl/wolfcrypt/settings.h"
+#include "wolfssl/ssl.h"
+#endif
+
 #include "esp_tls.h"
 #endif
 
 #ifdef ESP_IDF_COMP_BOOTLOADER_SUPPORT_ENABLED
 #include "bootloader_common.h"
+#include "bootloader_random.h"
 #endif
 
 #ifdef ESP_IDF_COMP_APP_UPDATE_ENABLED
@@ -175,11 +229,11 @@
 #include "esp_https_server.h"
 #endif
 
-#ifdef ESP_IDF_COMP_ESP_WEBSOCKET_CLIENT_ENABLED
+#if defined(ESP_IDF_COMP_ESP_WEBSOCKET_CLIENT_ENABLED) || defined(ESP_IDF_COMP_ESPRESSIF__ESP_WEBSOCKET_CLIENT_ENABLED)
 #include "esp_websocket_client.h"
 #endif
 
-#ifdef ESP_IDF_COMP_MDNS_ENABLED
+#if defined(ESP_IDF_COMP_MDNS_ENABLED) || defined(ESP_IDF_COMP_ESPRESSIF__MDNS_ENABLED)
 #include "mdns.h"
 #endif
 
@@ -206,11 +260,18 @@
 
 #ifdef ESP_IDF_COMP_DRIVER_ENABLED
 #include "driver/adc.h"
+#if ESP_IDF_VERSION_MAJOR > 4 && (defined(ESP_IDF_COMP_ESP_ADC_CAL_ENABLED) || defined(ESP_IDF_COMP_ESP_ADC_ENABLED))
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_continuous.h"
+#endif
 #include "driver/twai.h"
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2)
 #include "driver/dac.h"
 #endif
 #include "driver/gpio.h"
+#if ESP_IDF_VERSION_MAJOR > 4
+#include "driver/gptimer.h"
+#endif
 #include "driver/i2c.h"
 #include "driver/i2s.h"
 #include "driver/ledc.h"
@@ -222,10 +283,14 @@
 #include "driver/i2s_types.h"
 #include "driver/mcpwm_prelude.h"
 #else
+#include "driver/i2s.h"
 #include "driver/mcpwm.h"
 #endif
-#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32H2) || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32P4)
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32H2) || defined(CONFIG_IDF_TARGET_ESP32C6) // defined(CONFIG_IDF_TARGET_ESP32P4) // not yet supported in esp-idf
 #include "driver/pcnt.h"
+#if ESP_IDF_VERSION_MAJOR >= 5
+#include "driver/pulse_cnt.h"
+#endif
 #endif
 #include "driver/periph_ctrl.h"
 #include "driver/rmt.h"
@@ -250,6 +315,10 @@
 
 #include "driver/uart.h"
 #include "driver/uart_select.h"
+#endif
+
+#if ESP_IDF_VERSION_MAJOR > 4 && defined(SOC_TEMP_SENSOR_SUPPORTED)
+#include "driver/temperature_sensor.h"
 #endif
 
 #ifdef ESP_IDF_COMP_ESPCOREDUMP_ENABLED
@@ -316,30 +385,98 @@
 // since by default neither of the BT stacks is enabled.
 #ifdef CONFIG_BT_ENABLED
 #include "esp_bt.h"
-#endif
 
+// Bluedroid APIs (Classic BT & BLE)
 #ifdef CONFIG_BT_BLUEDROID_ENABLED
-#include "esp_gap_ble_api.h"
-#include "esp_gattc_api.h"
-#include "esp_gatt_defs.h"
-#include "esp_gatt_common_api.h"
-#include "esp_gatts_api.h"
+// Generic
 #include "esp_bt_defs.h"
-#include "esp_bt_main.h"
-#include "esp_gap_bt_api.h"
 #include "esp_bt_device.h"
+#include "esp_bt_main.h"
+
+// Classic BT
+#ifdef CONFIG_IDF_TARGET_ESP32 // Only the original ESP32 MCU supports Classic BT
+#ifdef CONFIG_BT_CLASSIC_ENABLED
+#ifdef CONFIG_BT_A2DP_ENABLE
 #include "esp_a2dp_api.h"
 #include "esp_avrc_api.h"
 #endif
+#include "esp_gap_bt_api.h"
+#ifdef CONFIG_BT_HFP_ENABLE
+#include "esp_hf_ag_api.h"
+#include "esp_hf_client_api.h"
+#endif
+#ifdef CONFIG_BT_HID_ENABLED
+#include "esp_hidd_api.h"
+#endif
+#include "esp_hidh_api.h"
+#if ESP_IDF_VERSION_MAJOR > 4
+#include "esp_sdp_api.h"
+#endif
+#ifdef CONFIG_BT_SPP_ENABLED
+#include "esp_spp_api.h"
+#endif
+#endif // CONFIG_BT_CLASSIC_ENABLED
+#endif // CONFIG_IDF_TARGET_ESP32
 
+// BLE
+#ifdef CONFIG_BT_BLE_ENABLED
+#include "esp_gap_ble_api.h"
+#include "esp_gatt_defs.h"
+#include "esp_gatt_common_api.h"
+#ifdef CONFIG_BT_GATTC_ENABLE
+#include "esp_gattc_api.h"
+#endif
+#ifdef CONFIG_BT_GATTS_ENABLE
+#include "esp_gatts_api.h"
+#endif
+#if ESP_IDF_VERSION_MAJOR > 4
+#ifdef CONFIG_BT_L2CAP_ENABLED
+#include "esp_l2cap_bt_api.h"
+#endif
+#endif
+#endif // CONFIG_BT_BLE_ENABLED
+#endif // CONFIG_BT_BLUEDROID_ENABLED
+
+// Nimble APIs (BLE only)
 #ifdef CONFIG_BT_NIMBLE_ENABLED
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #include "esp_nimble_hci.h"
+#endif
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
-#endif
+#endif // CONFIG_BT_NIMBLE_ENABLED
 
-#endif
+// BLE Mesh
+#ifdef CONFIG_BLE_MESH
+#include "esp_ble_mesh_defs.h"
+#include "esp_ble_mesh_ble_api.h"
+#include "esp_ble_mesh_common_api.h"
+#include "esp_ble_mesh_local_data_operation_api.h"
+#include "esp_ble_mesh_low_power_api.h"
+#include "esp_ble_mesh_networking_api.h"
+#include "esp_ble_mesh_provisioning_api.h"
+#include "esp_ble_mesh_proxy_api.h"
+#endif // CONFIG_BLE_MESH
+
+#endif // CONFIG_BT_ENABLED
+
+#endif // CONFIG_IDF_TARGET_ESP32S2
+
+//LCD support
+#if ((ESP_IDF_VERSION_MAJOR == 4) && (ESP_IDF_VERSION_MINOR >= 4)) || (ESP_IDF_VERSION_MAJOR >= 5)
+#ifdef ESP_IDF_COMP_ESP_LCD_ENABLED
+#include "esp_lcd_types.h"
+#include "esp_lcd_panel_rgb.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_vendor.h"
+#include "esp_lcd_panel_commands.h"
+#include "esp_lcd_panel_interface.h"
+#include "esp_lcd_panel_io_interface.h"
+#endif //ESP_IDF_COMP_LCD_ENABLED
+#endif //((ESP_IDF_VERSION_MAJOR == 4) && (ESP_IDF_VERSION_MINOR >= 4) || (ESP_IDF_VERSION_MAJOR >= 5))
+

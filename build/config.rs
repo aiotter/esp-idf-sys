@@ -30,7 +30,7 @@ pub struct BuildConfig {
     /// detected from the cargo target triple.
     pub mcu: Option<String>,
 
-    #[cfg(feature = "native")]
+    #[cfg(any(feature = "native", not(feature = "pio")))]
     /// Additional configurations for the native builder.
     #[serde(skip)]
     pub native: crate::native::cargo_driver::config::NativeConfig,
@@ -48,7 +48,7 @@ impl BuildConfig {
     pub fn try_from_env() -> Result<BuildConfig> {
         let cfg: BuildConfig = utils::parse_from_env(&[])?;
 
-        #[cfg(all(feature = "native", not(feature = "pio")))]
+        #[cfg(any(feature = "native", not(feature = "pio")))]
         let cfg = {
             use crate::native::cargo_driver::config::NativeConfig;
             BuildConfig {
@@ -103,9 +103,13 @@ impl BuildConfig {
     ///
     /// [root crate]: https://doc.rust-lang.org/cargo/reference/workspaces.html#root-package
     pub fn with_cargo_metadata(&mut self) -> Result<()> {
+        // workaround for https://github.com/esp-rs/esp-idf-sys/issues/260
+        let current_target = std::env::var("TARGET")?;
+        let filter_string = format!("--filter-platform={}", current_target);
+
         let metadata = cargo_metadata::MetadataCommand::new()
             .current_dir(workspace_dir()?)
-            .other_options(vec!["--locked".into()])
+            .other_options(vec!["--locked".into(), filter_string])
             .exec()?;
 
         let root_package = match (metadata.root_package(), &self.esp_idf_sys_root_crate) {
@@ -126,7 +130,8 @@ impl BuildConfig {
                     esp_idf_sdkconfig,
                     esp_idf_sdkconfig_defaults,
                     mcu,
-                    native: _,
+                    #[cfg(any(feature = "native", not(feature = "pio")))]
+                        native: _,
                     esp_idf_sys_root_crate: _,
                 },
         } = EspIdfSys::deserialize(&root_package.metadata)?;
@@ -143,7 +148,7 @@ impl BuildConfig {
         );
         utils::set_when_none(&mut self.mcu, mcu);
 
-        #[cfg(all(feature = "native", not(feature = "pio")))]
+        #[cfg(any(feature = "native", not(feature = "pio")))]
         self.native.with_cargo_metadata(root_package, &metadata)?;
 
         Ok(())
