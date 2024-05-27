@@ -32,7 +32,7 @@ build-time = "0.1"   # For esp_app_desc!()
 const_format = "0.2" # For esp_app_desc!()
 
 [build-dependencies]
-embuild = { git = "https://github.com/gopakumarce/embuild.git", branch = "gopa-inline_fns", features = ["glob", "kconfig", "cmake", "espidf"] }
+embuild = { git = "https://github.com/esp-rs/embuild.git", features = ["glob", "kconfig", "cmake", "espidf"] }
 anyhow = "1"
 regex = "1.5"
 bindgen = { version = "0.65.1", features = ["experimental"] }
