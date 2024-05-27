@@ -111,8 +111,8 @@ fn process_static_inlines(
     headers: Vec<std::path::PathBuf>,
 ) -> anyhow::Result<()> {
     let chip = Chip::from_str(mcu)?;
-    let gcc = format!("{}-gcc", chip.gcc_toolchain());
-    let ar = format!("{}-gcc-ar", chip.gcc_toolchain());
+    let gcc = format!("{}-gcc", chip.gcc_toolchain(None));
+    let ar = format!("{}-gcc-ar", chip.gcc_toolchain(None));
 
     let out_dir_path = cargo::out_dir();
     let file = File::open(out_dir_path.join(static_inlines_c())).unwrap();

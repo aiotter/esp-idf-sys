@@ -35,7 +35,7 @@ const_format = "0.2" # For esp_app_desc!()
 embuild = { git = "https://github.com/esp-rs/embuild.git", features = ["glob", "kconfig", "cmake", "espidf"] }
 anyhow = "1"
 regex = "1.5"
-bindgen = { version = "0.65.1", features = ["experimental"] }
+bindgen = { version = "0.69.4", features = ["experimental"] }
 cargo_metadata = "0.18"
 serde = { version = "1.0", features = ["derive"] }
 strum = { version = "0.24", features = ["derive"] }

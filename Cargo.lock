@@ -80,34 +80,11 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bindgen"
-version = "0.65.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfdf7b466f9a4903edc73f95d6d2bcd5baf8ae620638762244d3f60143643cc5"
-dependencies = [
- "annotate-snippets",
- "bitflags 1.3.2",
- "cexpr",
- "clang-sys",
- "lazy_static",
- "lazycell",
- "log",
- "peeking_take_while",
- "prettyplease",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash",
- "shlex",
- "syn 2.0.66",
- "which",
-]
-
-[[package]]
-name = "bindgen"
 version = "0.69.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a00dc851838a2120612785d195287475a3ac45514741da670b735818822129a0"
 dependencies = [
+ "annotate-snippets",
  "bitflags 2.5.0",
  "cexpr",
  "clang-sys",
@@ -342,7 +319,7 @@ version = "0.31.4"
 source = "git+https://github.com/esp-rs/embuild.git#04369e014e1c0cd8a7b81872bfcc20ea4350e098"
 dependencies = [
  "anyhow",
- "bindgen 0.69.4",
+ "bindgen",
  "bitflags 1.3.2",
  "cargo_toml",
  "cmake",
@@ -393,7 +370,7 @@ name = "esp-idf-sys"
 version = "0.34.1"
 dependencies = [
  "anyhow",
- "bindgen 0.65.1",
+ "bindgen",
  "build-time",
  "cargo_metadata",
  "const_format",
@@ -707,12 +684,6 @@ name = "once_cell"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fdb12b2476b595f9358c5161aa467c2438859caa136dec86c26fdd2efe17b92"
-
-[[package]]
-name = "peeking_take_while"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
 
 [[package]]
 name = "percent-encoding"
